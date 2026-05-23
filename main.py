@@ -79,7 +79,7 @@ def obtener_shapefile_zonas():
         
     print("✅ Archivo geográfico encontrado localmente. Cargando mapa...")
     gdf_zonas = gpd.read_file(shapefile_path)
-    gdf_zonas = gpd.to_crs(epsg=3857) # Coordenadas Web Mercator
+    gdf_zonas = gdf_zonas.to_crs(epsg=3857) # Coordenadas Web Mercator
     return gdf_zonas
 
 def renderizar_una_hora(hora, gdf_zonas, conteo_viajes, vmax_global):
