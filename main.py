@@ -1,12 +1,20 @@
 import os
 import glob
 import time
+import urllib.request
+import zipfile
 from multiprocessing import Pool, cpu_count
+from functools import partial
 import pandas as pd
-import pyarrow.parquet as pq
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import contextily as ctx
+from matplotlib.colors import LogNorm
 from tqdm import tqdm
 
-# Diccionario para mapear los nombres de las columnas de la TLC de Nueva York
+# ==========================================
+# CONFIGURACIONES Y ESQUEMAS (TLC NYC)
+# ==========================================
 SCHEMA_MAPPING = {
     'yellow': {'pickup_col': 'tpep_pickup_datetime', 'zone_col': 'PULocationID'},
     'green': {'pickup_col': 'lpep_pickup_datetime', 'zone_col': 'PULocationID'},
@@ -20,8 +28,12 @@ def identificar_tipo_vehiculo(file_path):
     if 'fhvhv' in filename: return 'fhvhv'
     return None
 
+# ==========================================
+# FUNCIONES DE LA FASE 1: PROCESAMIENTO PARQUET
+# ==========================================
 def procesar_un_archivo(file_path):
-    """Esta función la ejecuta un núcleo de CPU independiente por cada archivo."""
+    """Función aislada para procesar un archivo Parquet en un núcleo de CPU."""
+    import pyarrow.parquet as pq  # Importación local segura para multiprocesamiento
     tipo = identificar_tipo_vehiculo(file_path)
     if not tipo:
         return None
@@ -30,22 +42,22 @@ def procesar_un_archivo(file_path):
     columnas_requeridas = [mapeo['pickup_col'], mapeo['zone_col']]
     
     try:
-        # Lectura selectiva desde disco (Solo extrae las columnas necesarias)
+        # Lectura selectiva desde disco
         table = pq.read_table(file_path, columns=columnas_requeridas)
         df = table.to_pandas()
         
-        # Homologar nombres de columnas
+        # Homologar nombres
         df = df.rename(columns={
             mapeo['pickup_col']: 'pickup_datetime',
             mapeo['zone_col']: 'LocationID'
         })
         
-        # Extraer únicamente la hora del viaje (0-23)
+        # Procesar fechas y extraer hora
         df['pickup_datetime'] = pd.to_datetime(df['pickup_datetime'])
         df['hour'] = df['pickup_datetime'].dt.hour
         df['trip_count'] = 1
         
-        # Reducción local inmediata para no saturar la RAM
+        # Reducción local inmediata
         resumen_mensual = df.groupby(['hour', 'LocationID'], as_index=False)['trip_count'].sum()
         return resumen_mensual
         
@@ -53,48 +65,125 @@ def procesar_un_archivo(file_path):
         print(f"\n❌ Error procesando {os.path.basename(file_path)}: {e}")
         return None
 
+# ==========================================
+# FUNCIONES DE LA FASE 2: DESCARGA Y MAPEO
+# ==========================================
+def obtener_shapefile_zonas():
+    os.makedirs('taxi_zones', exist_ok=True)
+    shapefile_path = 'taxi_zones/taxi_zones.shp'
+    
+    if not os.path.exists(shapefile_path):
+        print("📥 Descargando Shapefile de zonas de Nueva York...")
+        url = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zones.zip"
+        zip_path = "taxi_zones/taxi_zones.zip"
+        urllib.request.urlretrieve(url, zip_path)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall('./taxi_zones/')
+        print("✅ Zonas descargadas y extraídas.")
+    
+    gdf_zonas = gpd.read_file(shapefile_path)
+    gdf_zonas = gdf_zonas.to_crs(epsg=3857) # Coordenadas Web Mercator
+    return gdf_zonas
+
+def renderizar_una_hora(hora, gdf_zonas, conteo_viajes, vmax_global):
+    """Pinta y guarda el mapa de una hora específica en un núcleo de CPU."""
+    print(f"🎨 Dibujando mapa para la hora: {hora:02d}:00...")
+    
+    datos_hora = conteo_viajes[conteo_viajes['hour'] == hora]
+    gdf_hora = gdf_zonas.merge(datos_hora, left_on='LocationID', right_on='LocationID', how='left')
+    
+    fig, ax = plt.subplots(figsize=(12, 12), dpi=120)
+    
+    gdf_hora.plot(
+        column='trip_count',
+        ax=ax,
+        cmap=plt.cm.hot,
+        norm=LogNorm(vmin=1, vmax=vmax_global),
+        alpha=0.8,
+        edgecolor='black',
+        linewidth=0.3,
+        missing_kwds={'color': 'none'}
+    )
+    
+    try:
+        ctx.add_basemap(ax, source=ctx.providers.CartoDB.DarkMatter, crs=gdf_hora.crs.to_string(), attribution=False)
+    except Exception as e:
+        pass # Si falla internet en un nodo, continúa con fondo plano oscuro
+    
+    ax.set_xlim(-8250000, -8210000)
+    ax.set_ylim(4960000, 4995000)
+    ax.axis('off')
+    
+    plt.text(0.05, 0.95, f'Hora: {hora:02d}:00', transform=ax.transAxes, 
+             fontsize=24, color='white', fontweight='bold', 
+             bbox=dict(facecolor='black', alpha=0.5, edgecolor='none'))
+    
+    nombre_archivo = f"output/zonas_hora_{hora:02d}.png"
+    plt.savefig(nombre_archivo, bbox_inches='tight', pad_inches=0, facecolor='black')
+    plt.close(fig)
+    return f"✅ Mapa {hora:02d}:00 guardado."
+
+# ==========================================
+# PIPELINE PRINCIPAL UNIFICADO
+# ==========================================
 if __name__ == '__main__':
-    start_time = time.time()
+    start_total = time.time()
+    os.makedirs('output', exist_ok=True)
+    nucleos = cpu_count()
     
-    # 🌟 CORRECCIÓN DE RUTA: Buscamos en tu carpeta real llamada 'input'
+    print(f"🚀 Sistema Inicializado. Detectados {nucleos} núcleos de CPU.")
+    print("--------------------------------------------------")
+    
+    # ----------------------------------------------
+    # FASE 1: PROCESAMIENTO MAP-REDUCE PARALELO (Pareja 2)
+    # ----------------------------------------------
     archivos_parquet = glob.glob("input/*.parquet")
-    
     if not archivos_parquet:
-        print("❌ No se encontraron archivos .parquet en la carpeta 'input/'.")
-        print("Verifica que tus archivos estén guardados exactamente dentro de la carpeta 'input'.")
+        print("❌ Error: No se encontraron archivos .parquet en la carpeta 'input/'.")
         exit()
         
-    # Determinar cuántos núcleos de CPU podemos explotar en tu máquina
-    nucleos = cpu_count()
-    print(f"🚀 Detectados {nucleos} núcleos de CPU.")
-    print(f"📦 Iniciando procesamiento en paralelo de {len(archivos_parquet)} archivos...")
-    
-    # Lanzar el Pool de multiprocesamiento con una barra de progreso visual
+    print(f"📦 [FASE 1] Procesando en paralelo {len(archivos_parquet)} archivos masivos...")
     with Pool(processes=nucleos) as pool:
         resultados = list(tqdm(
             pool.imap_unordered(procesar_un_archivo, archivos_parquet),
             total=len(archivos_parquet),
-            desc="Procesando archivos"
+            desc="Devorando archivos Parquet"
         ))
-    
-    # Filtrar posibles resultados nulos por archivos corruptos
+        
     resultados_validos = [r for r in resultados if r is not None]
-    
     if not resultados_validos:
-        print("❌ No se pudo procesar ningún archivo con éxito.")
+        print("❌ Error: No se pudo extraer información válida de los archivos.")
         exit()
         
-    print("\n🔄 Combinando y ejecutando el Reduce Global de todos los meses...")
+    print("🔄 Consolidando Reduce Global...")
     df_unificado = pd.concat(resultados_validos, ignore_index=True)
+    conteo_viajes = df_unificado.groupby(['hour', 'LocationID'], as_index=False)['trip_count'].sum()
     
-    # Agrupación final combinada de todo el histórico de datos
-    df_final = df_unificado.groupby(['hour', 'LocationID'], as_index=False)['trip_count'].sum()
+    # Guardar respaldo intermedio
+    ruta_csv = "output/conteo_viajes_global_2024_2025.csv"
+    conteo_viajes.to_csv(ruta_csv, index=False)
+    print(f"✅ Dataset histórico unificado generado en: {ruta_csv}")
+    print("--------------------------------------------------")
     
-    # Guardar el CSV optimizado listo para que la Pareja 3 dibuje los mapas
-    os.makedirs('output', exist_ok=True)
-    ruta_salida = "output/conteo_viajes_global_2024_2025.csv"
-    df_final.to_csv(ruta_salida, index=False)
+    # ----------------------------------------------
+    # FASE 2: RENDERIZADO DE MAPAS EN PARALELO (Pareja 3)
+    # ----------------------------------------------
+    print("🌍 [FASE 2] Iniciando infraestructura geográfica...")
+    gdf_zonas = obtener_shapefile_zonas()
     
-    print(f"\n🎉 ¡Tubería completada exitosamente en {time.time() - start_time:.2f} segundos!")
-    print(f"📁 Archivo consolidado guardado en: {ruta_salida}")
-    print(f"📊 Filas totales enviadas al equipo de mapas: {len(df_final)}")
+    # Escala logarítmica global consistente
+    vmax_global = conteo_viajes['trip_count'].quantile(0.99)
+    if vmax_global < 2: vmax_global = 10
+    
+    print(f"🎨 Generando los 24 mapas de calor en paralelo usando {nucleos} núcleos...")
+    funcion_parcial = partial(renderizar_una_hora, gdf_zonas=gdf_zonas, conteo_viajes=conteo_viajes, vmax_global=vmax_global)
+    
+    horas = list(range(24))
+    with Pool(processes=nucleos) as pool:
+        reporte_mapas = pool.map(funcion_parcial, horas)
+        
+    print("\n".join(reporte_mapas))
+    print("--------------------------------------------------")
+    print(f"🎉 ¡PROYECTO EXITOSO! UrbanFlow AI salvado en {time.time() - start_total:.2f} segundos.")
+    print("📁 Revisa la carpeta 'output/', ahí están los 24 mapas listos para Coca-Cola.")
