@@ -69,21 +69,17 @@ def procesar_un_archivo(file_path):
 # FUNCIONES DE LA FASE 2: DESCARGA Y MAPEO
 # ==========================================
 def obtener_shapefile_zonas():
-    os.makedirs('taxi_zones', exist_ok=True)
+    # Ruta directa al archivo que ya descargaste y extrajiste manualmente
     shapefile_path = 'taxi_zones/taxi_zones.shp'
     
     if not os.path.exists(shapefile_path):
-        print("📥 Descargando Shapefile de zonas de Nueva York...")
-        url = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zones.zip"
-        zip_path = "taxi_zones/taxi_zones.zip"
-        urllib.request.urlretrieve(url, zip_path)
+        print("❌ Error: No encontré 'taxi_zones/taxi_zones.shp'.")
+        print("Asegúrate de haber descomprimido el ZIP manualmente dentro de esa carpeta.")
+        exit()
         
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall('./taxi_zones/')
-        print("✅ Zonas descargadas y extraídas.")
-    
+    print("✅ Archivo geográfico encontrado localmente. Cargando mapa...")
     gdf_zonas = gpd.read_file(shapefile_path)
-    gdf_zonas = gdf_zonas.to_crs(epsg=3857) # Coordenadas Web Mercator
+    gdf_zonas = gpd.to_crs(epsg=3857) # Coordenadas Web Mercator
     return gdf_zonas
 
 def renderizar_una_hora(hora, gdf_zonas, conteo_viajes, vmax_global):
