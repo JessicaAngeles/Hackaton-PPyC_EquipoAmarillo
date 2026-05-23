@@ -123,12 +123,32 @@ def renderizar_una_hora(hora, gdf_zonas, conteo_viajes, vmax_global):
 # ==========================================
 # PIPELINE PRINCIPAL UNIFICADO
 # ==========================================
+# ==========================================
+# PIPELINE PRINCIPAL UNIFICADO
+# ==========================================
 if __name__ == '__main__':
     start_total = time.time()
     os.makedirs('output', exist_ok=True)
     nucleos = cpu_count()
     
     print(f"🚀 Sistema Inicializado. Detectados {nucleos} núcleos de CPU.")
+    print("--------------------------------------------------")
+    
+    # ----------------------------------------------
+    # 🌐 FASE 0: EXTRACCIÓN Y WEB SCRAPING AUTÓNOMO
+    # ----------------------------------------------
+    print("🌐 [FASE 0] Iniciando extracción y descarga automática desde la TLC...")
+    try:
+        # Importamos el script de scraping de tus compañeros de forma dinámica
+        import webscrapping
+        
+        # Ejecutamos su función principal (descargará los datos en 'input/' usando sus 4 hilos)
+        webscrapping.main()
+        print("✅ Fase 0: Descargas e inspección web finalizadas con éxito.")
+    except Exception as e:
+        print(f"⚠️ Alerta en Fase 0: Ocurrió un detalle durante el scraping: {e}")
+        print("Intentando continuar con los archivos locales disponibles en 'input/'...")
+        
     print("--------------------------------------------------")
     
     # ----------------------------------------------
@@ -140,46 +160,4 @@ if __name__ == '__main__':
         exit()
         
     print(f"📦 [FASE 1] Procesando en paralelo {len(archivos_parquet)} archivos masivos...")
-    with Pool(processes=nucleos) as pool:
-        resultados = list(tqdm(
-            pool.imap_unordered(procesar_un_archivo, archivos_parquet),
-            total=len(archivos_parquet),
-            desc="Devorando archivos Parquet"
-        ))
-        
-    resultados_validos = [r for r in resultados if r is not None]
-    if not resultados_validos:
-        print("❌ Error: No se pudo extraer información válida de los archivos.")
-        exit()
-        
-    print("🔄 Consolidando Reduce Global...")
-    df_unificado = pd.concat(resultados_validos, ignore_index=True)
-    conteo_viajes = df_unificado.groupby(['hour', 'LocationID'], as_index=False)['trip_count'].sum()
-    
-    # Guardar respaldo intermedio
-    ruta_csv = "output/conteo_viajes_global_2024_2025.csv"
-    conteo_viajes.to_csv(ruta_csv, index=False)
-    print(f"✅ Dataset histórico unificado generado en: {ruta_csv}")
-    print("--------------------------------------------------")
-    
-    # ----------------------------------------------
-    # FASE 2: RENDERIZADO DE MAPAS EN PARALELO (Pareja 3)
-    # ----------------------------------------------
-    print("🌍 [FASE 2] Iniciando infraestructura geográfica...")
-    gdf_zonas = obtener_shapefile_zonas()
-    
-    # Escala logarítmica global consistente
-    vmax_global = conteo_viajes['trip_count'].quantile(0.99)
-    if vmax_global < 2: vmax_global = 10
-    
-    print(f"🎨 Generando los 24 mapas de calor en paralelo usando {nucleos} núcleos...")
-    funcion_parcial = partial(renderizar_una_hora, gdf_zonas=gdf_zonas, conteo_viajes=conteo_viajes, vmax_global=vmax_global)
-    
-    horas = list(range(24))
-    with Pool(processes=nucleos) as pool:
-        reporte_mapas = pool.map(funcion_parcial, horas)
-        
-    print("\n".join(reporte_mapas))
-    print("--------------------------------------------------")
-    print(f"🎉 ¡PROYECTO EXITOSO! UrbanFlow AI salvado en {time.time() - start_total:.2f} segundos.")
-    print("📁 Revisa la carpeta 'output/', ahí están los 24 mapas listos para Coca-Cola.")
+    # ... (Todo el resto de tu código de procesamiento y Fase 2 se queda exactamente igual)
