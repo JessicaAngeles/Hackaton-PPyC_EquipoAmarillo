@@ -1,6 +1,25 @@
+# ==========================================
+# Archivos de Datos Pesados (¡No subir a GitHub!)
+# ==========================================
 input/
+taxi_zones/
 output/
+
+# ==========================================
+# Entornos Virtuales y Entorno Local
+# ==========================================
 env/
+venv/
+.env
+
+# ==========================================
+# Caché de Python y Sistema
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
 .vscode/
-*.parquet
-*.csv
+.idea/
+.DS_Store
